@@ -2036,29 +2036,42 @@ async function fetchFromGoogleSheets() {
   }
 }
 
-// Parsear CSV a array de objetos
-function csvToObjects(csvText, headerRow) {
-  const parseCSVLine = line => {
-    const result = []; let cur = ''; let inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') { inQ = !inQ; }
-      else if (c === ',' && !inQ) { result.push(cur.trim()); cur = ''; }
-      else { cur += c; }
+// Parsear CSV a array de objetos — maneja comillas, saltos de línea dentro de celdas
+function parseCSVFull(text) {
+  const rows = [];
+  let row = []; let cur = ''; let inQ = false; let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"' && text[i+1] === '"') { cur += '"'; i += 2; continue; } // escaped quote
+      if (c === '"') { inQ = false; i++; continue; }
+      cur += c;
+    } else {
+      if (c === '"') { inQ = true; i++; continue; }
+      if (c === ',') { row.push(cur); cur = ''; i++; continue; }
+      if (c === '\r' && text[i+1] === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; i += 2; continue; }
+      if (c === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; i++; continue; }
+      cur += c;
     }
-    result.push(cur.trim());
-    return result;
-  };
-  const lines = csvText.split('\n').map(parseCSVLine).filter(r => r.some(c => c !== ''));
-  if (lines.length < headerRow) return [];
-  const headers = lines[headerRow - 1].map(h => String(h || '').trim());
+    i++;
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+
+function csvToObjects(csvText, headerRow) {
+  const rows = parseCSVFull(csvText).filter(r => r.some(c => c.trim() !== ''));
+  if (rows.length < headerRow) return [];
+  const headers = rows[headerRow - 1].map(h => String(h || '').trim());
   const result = [];
-  for (let i = headerRow; i < lines.length; i++) {
-    const row = lines[i];
-    if (row.every(c => !c)) continue;
+  for (let i = headerRow; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.every(c => !c || !c.trim())) continue;
     if (String(row[0] || '').startsWith('⬇')) continue;
     const obj = {};
-    headers.forEach((h, j) => { obj[h] = row[j] !== undefined ? row[j] : ''; });
+    headers.forEach((h, j) => {
+      obj[h] = j < row.length ? String(row[j] || '').trim() : '';
+    });
     normalizarFila(obj);
     result.push(obj);
   }
@@ -2754,9 +2767,9 @@ async function leerHistoricoAPI() {
       const res = await fetch(url);
       if (!res.ok) continue;
       const csvText = await res.text();
-      // Verificar que no sea una página de error (el CSV de una hoja inexistente puede dar 200 con HTML)
+      // Verificar que no sea una página de error
       if (csvText.includes('<!DOCTYPE') || csvText.includes('<html')) continue;
-      const lines = csvText.split('\n').map(l => l.split(',').map(c => c.replace(/^"|"$/g,'').trim()));
+      const lines = parseCSVFull(csvText).filter(r => r.some(c => c.trim()));
       const idx = MESES_NOMBRES.indexOf(nombre);
       const datos = extraerDatosResumen(lines, nombre, idx + 1, anio);
       if (datos) resultado.push(datos);
